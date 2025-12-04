@@ -1,5 +1,7 @@
+# soundboard.py
 import os
 import json
+from typing import Optional
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWidgets import (
@@ -8,15 +10,27 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
-from settings import CONFIG_FILE
+from settings import CONFIG_FILE, APP_VERSION, UPDATE_DESCRIPTOR_URL, get_os_tag
 from widgets import SoundButton, LoadWindow
+from updater import UpdateClient
+from help import HelpWindow
+
+
+DEBUG_SOUNDBOARD = True
+
+
+def _dbg(msg: str) -> None:
+    if DEBUG_SOUNDBOARD:
+        print(f"[SoundBoard27][core] {msg}", flush=True)
 
 
 class Soundboard(QWidget):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("GambitBoard")
+        self.setWindowTitle("SoundBoard27")
+
+        _dbg(f"Soundboard init: APP_VERSION={APP_VERSION}, CONFIG_FILE='{CONFIG_FILE}'")
 
         # One-shot player
         self.player = QMediaPlayer(self)
@@ -26,16 +40,33 @@ class Soundboard(QWidget):
         # Loop players per button
         self.loop_players = {}
 
-        self.current_button = None
+        self.current_button: Optional[SoundButton] = None
         self.current_page = 0
         self.volume = 1.0  # global volume 0.0–1.0
 
+        # Update state
+        self.update_skip_version: Optional[str] = None
+        self._update_os_tag = get_os_tag()
+        self._update_client: Optional[UpdateClient] = None
+
+        # Help window (lazy-created)
+        self._help_window: Optional[HelpWindow] = None
+
+        _dbg(f"Detected OS tag: '{self._update_os_tag}'")
+
+        # Buttons
         self.buttons = [SoundButton(i) for i in range(27)]
         for btn in self.buttons:
             btn.clicked.connect(lambda _, b=btn: self.play_sound(b))
 
+        # Load configuration (buttons, volume, update skip_version)
         self.load_config()
+        _dbg(
+            f"Config loaded: global_volume={self.volume}, "
+            f"update_skip_version={self.update_skip_version}"
+        )
 
+        # Layouts
         main_layout = QVBoxLayout(self)
         top_bar = QHBoxLayout()
         bottom_bar = QHBoxLayout()
@@ -55,9 +86,9 @@ class Soundboard(QWidget):
 
         self.grid = QGridLayout()
 
-        bottom_button = QPushButton("Load sounds")
+        # Renamed per your spec
+        bottom_button = QPushButton("Load Sounds [Settings...]")
         bottom_button.clicked.connect(self.open_loader)
-
         bottom_bar.addWidget(bottom_button)
 
         # Stop controls
@@ -97,6 +128,11 @@ class Soundboard(QWidget):
         # Apply initial volume to audio outputs
         self.refresh_volumes()
 
+        # Start background update check (non-blocking)
+        self._setup_update_checker()
+
+    # --- Paging / layout ---
+
     def update_page(self):
         for i in reversed(range(self.grid.count())):
             item = self.grid.itemAt(i)
@@ -121,6 +157,8 @@ class Soundboard(QWidget):
         if self.current_page < 2:
             self.current_page += 1
             self.update_page()
+
+    # --- Audio / playback ---
 
     def refresh_volumes(self):
         # One-shot player
@@ -177,8 +215,16 @@ class Soundboard(QWidget):
                 self.current_button = None
                 self.refresh_volumes()
 
+    # --- UI actions ---
+
     def open_loader(self):
-        loader = LoadWindow(self.buttons, self.save_config, self)
+        loader = LoadWindow(
+            self.buttons,
+            self.save_config,
+            check_updates_callback=self._manual_update_check,
+            help_callback=self._show_help_window,
+            parent=self,
+        )
         loader.resize(900, 600)
         loader.show()
 
@@ -206,45 +252,89 @@ class Soundboard(QWidget):
         self.volume = value / 100.0
         self.refresh_volumes()
 
+    # --- Config persistence ---
+
     def save_config(self):
-        data = []
+        button_items = []
         for btn in self.buttons:
-            data.append({
-                "path": btn.sound_path,
-                "label": btn.label_text,
-                "mode": "loop" if btn.is_loop else "one-shot",
-                "volume": btn.button_volume,
-            })
+            button_items.append(
+                {
+                    "path": btn.sound_path,
+                    "label": btn.label_text,
+                    "mode": "loop" if btn.is_loop else "one-shot",
+                    "volume": btn.button_volume,
+                }
+            )
 
-        # Store global volume on the first item for backward compatibility
-        if data:
-            data[0]["global_volume"] = self.volume
+        config = {
+            "buttons": button_items,
+            "global_volume": self.volume,
+            "update": {
+                "skip_version": self.update_skip_version,
+            },
+            "app_version": APP_VERSION,
+        }
 
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+        except OSError as e:
+            _dbg(f"Error saving config '{CONFIG_FILE}': {e!r}")
 
         self.refresh_volumes()
 
     def load_config(self):
         if not os.path.isfile(CONFIG_FILE):
+            _dbg(f"No config file found at '{CONFIG_FILE}', using defaults")
             return
 
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            try:
-                items = json.load(f)
-            except json.JSONDecodeError:
-                return
-
-        if not isinstance(items, list):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            _dbg(f"Error loading config '{CONFIG_FILE}': {e!r}")
             return
 
-        if items and isinstance(items[0], dict):
-            first = items[0]
+        items = []
+        volume = self.volume
+        skip_version: Optional[str] = None
+
+        if isinstance(raw, list):
+            _dbg("Config format: legacy list")
+            items = raw
+            if items and isinstance(items[0], dict):
+                first = items[0]
+                try:
+                    volume = float(first.get("global_volume", first.get("volume", 1.0)))
+                except (TypeError, ValueError):
+                    volume = 1.0
+        elif isinstance(raw, dict):
+            _dbg("Config format: dict (new)")
+            maybe_buttons = raw.get("buttons", [])
+            if isinstance(maybe_buttons, list):
+                items = maybe_buttons
+
             try:
-                # Old configs: no global_volume, only per-button "volume" used as global
-                self.volume = float(first.get("global_volume", first.get("volume", 1.0)))
+                volume = float(raw.get("global_volume", 1.0))
             except (TypeError, ValueError):
-                self.volume = 1.0
+                volume = 1.0
+
+            update_cfg = raw.get("update", {})
+            if isinstance(update_cfg, dict):
+                value = update_cfg.get("skip_version")
+                if isinstance(value, str) and value.strip():
+                    skip_version = value.strip()
+        else:
+            _dbg("Config format: unsupported, ignoring")
+            return
+
+        self.volume = max(0.0, min(1.0, volume))
+        self.update_skip_version = skip_version
+
+        _dbg(
+            f"Config applied: global_volume={self.volume}, "
+            f"skip_version={self.update_skip_version}"
+        )
 
         for btn, item in zip(self.buttons, items):
             if not isinstance(item, dict):
@@ -253,7 +343,7 @@ class Soundboard(QWidget):
             path = item.get("path")
             label = item.get("label", btn.label_text)
             mode_str = item.get("mode", "one-shot")
-            is_loop = (mode_str == "loop")
+            is_loop = mode_str == "loop"
             try:
                 btn_volume = float(item.get("volume", 1.0))
             except (TypeError, ValueError):
@@ -267,9 +357,95 @@ class Soundboard(QWidget):
             btn.button_volume = max(0.0, min(1.0, btn_volume))
 
     def closeEvent(self, event):
-        # Optional: auto-save on close
         try:
             self.save_config()
-        except Exception:
-            pass
+        except Exception as e:
+            _dbg(f"Exception during closeEvent save_config: {e!r}")
         super().closeEvent(event)
+
+    # --- Update integration ---
+
+    def _get_skip_version(self) -> Optional[str]:
+        return self.update_skip_version
+
+    def _set_skip_version(self, value: Optional[str]) -> None:
+        self.update_skip_version = value
+        _dbg(f"_set_skip_version: new skip_version={self.update_skip_version}")
+        try:
+            self.save_config()
+        except Exception as e:
+            _dbg(
+                "_set_skip_version: error saving config after "
+                f"skip_version update: {e!r}"
+            )
+
+    def _manual_update_check(self, result_callback=None) -> None:
+        """
+        Called from the LoadWindow 'Check for Updates' button.
+
+        This should perform an update check even if the user has previously
+        snoozed a version, so we ask the UpdateClient to ignore the
+        skip_version logic for this run.
+
+        If result_callback is provided, it will be called with a string status:
+        "no_update", "update_available", "deprecated", or "error".
+        """
+        _dbg("_manual_update_check: triggered from UI")
+        if self._update_client is None:
+            _dbg("_manual_update_check: no update client, ignoring")
+            if callable(result_callback):
+                try:
+                    result_callback("error")
+                except Exception as cb_e:
+                    _dbg(
+                        "_manual_update_check: error while calling "
+                        f"result_callback without client: {cb_e!r}"
+                    )
+            return
+        try:
+            self._update_client.check_now(
+                ignore_skip=True,
+                result_callback=result_callback,
+            )
+        except Exception as e:
+            _dbg(f"_manual_update_check: exception during check_now: {e!r}")
+            if callable(result_callback):
+                try:
+                    result_callback("error")
+                except Exception as cb_e:
+                    _dbg(
+                        "_manual_update_check: error while calling "
+                        f"result_callback after exception: {cb_e!r}"
+                    )
+
+    def _setup_update_checker(self):
+        if not self._update_os_tag:
+            _dbg("_setup_update_checker: OS tag is empty, skipping update check")
+            return
+
+        self._update_client = UpdateClient(
+            parent_widget=self,
+            app_version=APP_VERSION,
+            descriptor_url=UPDATE_DESCRIPTOR_URL,
+            os_tag=self._update_os_tag,
+            get_skip_version=self._get_skip_version,
+            set_skip_version=self._set_skip_version,
+        )
+
+        self._update_client.start()
+
+    # --- Help window ---
+
+    def _show_help_window(self) -> None:
+        """
+        Show the Help / Credits window, creating it on first use.
+        """
+        if self._help_window is None:
+            _dbg("_show_help_window: creating HelpWindow instance")
+            # Create as a top-level window for independent stacking
+            self._help_window = HelpWindow(None)
+
+        _dbg("_show_help_window: showing HelpWindow")
+        self._help_window.show()
+        self._help_window.raise_()
+        self._help_window.activateWindow()

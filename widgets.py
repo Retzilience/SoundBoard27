@@ -1,3 +1,4 @@
+# widgets.py
 from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QGridLayout, QVBoxLayout,
@@ -116,22 +117,40 @@ class SoundButton(QPushButton):
         else:
             if self.is_loop:
                 if self.is_playing:
-                    style = self.loop_active_style1 if self._pulse_state else self.loop_active_style2
+                    style = (
+                        self.loop_active_style1
+                        if self._pulse_state
+                        else self.loop_active_style2
+                    )
                 else:
                     style = self.loop_inactive_style
             else:
                 if self.is_playing:
-                    style = self.one_shot_active_style1 if self._pulse_state else self.one_shot_active_style2
+                    style = (
+                        self.one_shot_active_style1
+                        if self._pulse_state
+                        else self.one_shot_active_style2
+                    )
                 else:
                     style = self.default_style
         self.setStyleSheet(style)
 
 
 class LoadWindow(QWidget):
-    def __init__(self, buttons, save_callback, parent=None):
-        super().__init__(None)  # Force top-level window
+    def __init__(
+        self,
+        buttons,
+        save_callback,
+        check_updates_callback=None,
+        help_callback=None,
+        parent=None,
+    ):
+        # Force top-level window; parent is kept only for potential future use
+        super().__init__(None)
         self.buttons = buttons
         self.save_callback = save_callback
+        self.check_updates_callback = check_updates_callback
+        self.help_callback = help_callback
 
         self.setWindowTitle("Load Sounds")
         self.setMinimumSize(800, 500)
@@ -230,7 +249,8 @@ class LoadWindow(QWidget):
             loop_radio = QRadioButton()
 
             # Style radios so checked dot matches legend colors
-            one_shot_radio.setStyleSheet(f"""
+            one_shot_radio.setStyleSheet(
+                f"""
                 QRadioButton::indicator {{
                     width: 14px;
                     height: 14px;
@@ -242,8 +262,10 @@ class LoadWindow(QWidget):
                     border: 1px solid {ONE_SHOT_COLOR};
                     background-color: {ONE_SHOT_COLOR};
                 }}
-            """)
-            loop_radio.setStyleSheet(f"""
+            """
+            )
+            loop_radio.setStyleSheet(
+                f"""
                 QRadioButton::indicator {{
                     width: 14px;
                     height: 14px;
@@ -255,7 +277,8 @@ class LoadWindow(QWidget):
                     border: 1px solid {LOOP_COLOR};
                     background-color: {LOOP_COLOR};
                 }}
-            """)
+            """
+            )
 
             mode_group = QButtonGroup(mode_container)
             mode_group.setExclusive(True)
@@ -291,10 +314,36 @@ class LoadWindow(QWidget):
         scroll.setWidget(container)
         main_layout.addWidget(scroll)
 
+        # Save button bar
         save_button = QPushButton("Save")
         save_button.setFixedHeight(40)
         save_button.clicked.connect(self.apply_and_save)
         main_layout.addWidget(save_button)
+
+        # Extra bottom bar: Check for Updates / Help, Credits &+
+        bottom_bar = QHBoxLayout()
+        bottom_bar.setContentsMargins(0, 0, 0, 0)
+        bottom_bar.setSpacing(8)
+
+        self.check_updates_button = QPushButton("Check for Updates")
+        self.check_updates_button.setFixedHeight(32)
+        # Ensure enough width for temporary status texts without resizing
+        self.check_updates_button.setMinimumWidth(160)
+        self.check_updates_button.clicked.connect(self._on_check_updates_clicked)
+
+        # Store defaults for later restoration after flash states
+        self._check_updates_default_text = self.check_updates_button.text()
+        self._check_updates_default_style = self.check_updates_button.styleSheet()
+
+        self.help_button = QPushButton("Help, Credits &+")
+        self.help_button.setFixedHeight(32)
+        self.help_button.clicked.connect(self._on_help_clicked)
+
+        bottom_bar.addWidget(self.check_updates_button)
+        bottom_bar.addStretch()
+        bottom_bar.addWidget(self.help_button)
+
+        main_layout.addLayout(bottom_bar)
 
         self.setLayout(main_layout)
 
@@ -303,7 +352,7 @@ class LoadWindow(QWidget):
             self,
             "Select Sound or Video",
             "",
-            "Audio/Video Files (*.wav *.mp3 *.ogg *.flac *.mp4 *.mkv *.avi *.mov)"
+            "Audio/Video Files (*.wav *.mp3 *.ogg *.flac *.mp4 *.mkv *.avi *.mov)",
         )
         if path:
             btn._path_field.setText(path)
@@ -329,3 +378,72 @@ class LoadWindow(QWidget):
 
         self.save_callback()
         self.close()
+
+    def _flash_update_button(self, temp_text: str, bg_color: str, duration_ms: int = 1200) -> None:
+        """
+        Temporarily change the Check for Updates button text and background
+        colour, then restore the original appearance.
+        """
+        if not hasattr(self, "check_updates_button"):
+            return
+
+        btn = self.check_updates_button
+
+        default_text = getattr(self, "_check_updates_default_text", btn.text())
+        default_style = getattr(self, "_check_updates_default_style", btn.styleSheet())
+
+        temp_style = default_style + f"\nQPushButton {{ background-color: {bg_color}; }}"
+        btn.setStyleSheet(temp_style)
+        btn.setText(temp_text)
+
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+
+        def restore():
+            btn.setText(default_text)
+            btn.setStyleSheet(default_style)
+            timer.deleteLater()
+
+        timer.timeout.connect(restore)
+        timer.start(duration_ms)
+
+    def _on_check_updates_clicked(self):
+        """
+        Triggered by the 'Check for Updates' button.
+
+        If a callback has been provided by the main window, call it.
+        This is intended to run a manual check that may ignore snoozing.
+        """
+        if self.check_updates_callback is None:
+            self._flash_update_button("Failed to Check", "#e57373")
+            return
+
+        def handle_result(result: str) -> None:
+            # Map update client status to brief visual feedback on the button.
+            if result == "no_update":
+                # Pastel dark green
+                self._flash_update_button("No Update Needed", "#4caf50")
+            elif result == "error":
+                # Pastel red
+                self._flash_update_button("Failed to Check", "#e57373")
+            # For "update_available" or "deprecated", the UpdateClient
+            # shows its own dialogs; no extra button state needed.
+
+        try:
+            self.check_updates_callback(handle_result)
+        except Exception:
+            self._flash_update_button("Failed to Check", "#e57373")
+
+    def _on_help_clicked(self):
+        """
+        Triggered by the 'Help, Credits &+' button.
+
+        Delegates to the callback provided by the main window, which is
+        responsible for showing or raising the HelpWindow.
+        """
+        if self.help_callback is not None:
+            try:
+                self.help_callback()
+            except Exception:
+                # Fail-soft; worst case is that the help window does not open.
+                pass
