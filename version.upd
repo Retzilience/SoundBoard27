@@ -1,0 +1,4 @@
+# SoundBoard27 update descriptor
+# version | os | flags,flags,... | download_url
+
+0.1 | windows | legacy,init  | https://github.com/Retzilience/SoundBoard27/releases/download/%23init/SoundBoard27_win_0-1.zip
