@@ -1,6 +1,7 @@
 # SoundBoard27
 
-Latest releases (Windows/Linux binaries): https://github.com/Retzilience/SoundBoard27/releases
+Latest releases (Windows / Linux binaries):  
+**[Download from the Releases page](https://github.com/Retzilience/SoundBoard27/releases)**
 
 SoundBoard27 is a lightweight 27-button soundboard arranged as three pages of 3×3 buttons (3×9 total). Each slot can be assigned an audio or video file and configured per-button for one-shot or looping playback, with independent per-button volume and a global volume control. The application targets Windows and Linux and is implemented with PySide6/Qt for the UI and QtMultimedia for playback.
 
