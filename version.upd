@@ -1,8 +1,11 @@
 # SoundBoard27 update descriptor
 # version | os | flags,flags,... | download_url
 
-0.3 | windows | stable | https://github.com/Retzilience/SoundBoard27/releases/download/0.3/SoundBoard27_win_0.3.zip
-0.3 | linux   | stable | https://github.com/Retzilience/SoundBoard27/releases/download/0.3/SoundBoard27_linux_0.3.tar.gz
+0.4 | windows | stable | https://github.com/Retzilience/SoundBoard27/releases/download/0.4/SoundBoard27_win_0.4.zip
+0.4 | linux   | stable | https://github.com/Retzilience/SoundBoard27/releases/download/0.4/SoundBoard27_linux_0.4.tar.gz
+
+0.3 | windows | legacy | https://github.com/Retzilience/SoundBoard27/releases/download/0.3/SoundBoard27_win_0.3.zip
+0.3 | linux   | legacy | https://github.com/Retzilience/SoundBoard27/releases/download/0.3/SoundBoard27_linux_0.3.tar.gz
 
 0.2 | windows | stable,deprecated | https://github.com/Retzilience/SoundBoard27/releases/download/0.2/SoundBoard27_win_0-2.zip
 0.2 | linux   | stable,deprecated | https://github.com/Retzilience/SoundBoard27/releases/download/0.2/SoundBoard27_linux_0-2.zip
