@@ -1,9 +1,9 @@
 # soundboard.py
 import os
 import json
-from typing import Optional
+from typing import Optional, Callable
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QUrl, QTimer
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QGridLayout, QVBoxLayout,
     QHBoxLayout, QLabel, QSlider
@@ -17,6 +17,10 @@ from help import HelpWindow
 
 
 DEBUG_SOUNDBOARD = True
+
+STOP_OUTLINE_COLOR = "#e57373"
+STOP_FLASH_COLOR = "#e57373"
+STOP_FLASH_MS = 500
 
 
 def _dbg(msg: str) -> None:
@@ -86,19 +90,28 @@ class Soundboard(QWidget):
 
         self.grid = QGridLayout()
 
-        # Renamed per your spec
         bottom_button = QPushButton("Load Sounds [Settings...]")
         bottom_button.clicked.connect(self.open_loader)
         bottom_bar.addWidget(bottom_button)
 
-        # Stop controls
+        # Stop controls (with red pastel outline + flash fill on click)
         stop_one_shot_button = QPushButton("stop one-shot")
         stop_loops_button = QPushButton("stop loops")
         stop_all_button = QPushButton("stop all")
 
-        stop_one_shot_button.clicked.connect(self.stop_one_shots)
-        stop_loops_button.clicked.connect(self.stop_loops)
-        stop_all_button.clicked.connect(self.stop_all)
+        self._mark_stop_button(stop_one_shot_button)
+        self._mark_stop_button(stop_loops_button)
+        self._mark_stop_button(stop_all_button)
+
+        stop_one_shot_button.clicked.connect(
+            lambda _checked=False, b=stop_one_shot_button: self._flash_and_call(b, self.stop_one_shots)
+        )
+        stop_loops_button.clicked.connect(
+            lambda _checked=False, b=stop_loops_button: self._flash_and_call(b, self.stop_loops)
+        )
+        stop_all_button.clicked.connect(
+            lambda _checked=False, b=stop_all_button: self._flash_and_call(b, self.stop_all)
+        )
 
         # Global volume slider
         volume_label = QLabel("Volume")
@@ -130,6 +143,59 @@ class Soundboard(QWidget):
 
         # Start background update check (non-blocking)
         self._setup_update_checker()
+
+    # --- Stop button visuals ---
+
+    def _mark_stop_button(self, btn: QPushButton) -> None:
+        btn.setProperty("stopButton", True)
+        try:
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+            btn.update()
+        except Exception:
+            pass
+
+    def _flash_button(self, btn: QPushButton, duration_ms: int = STOP_FLASH_MS) -> None:
+        if btn is None:
+            return
+
+        original_style = btn.styleSheet()
+
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {STOP_FLASH_COLOR};
+                color: #ffffff;
+                border: 1px solid {STOP_OUTLINE_COLOR};
+                padding: 6px;
+            }}
+        """)
+
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+
+        def restore() -> None:
+            btn.setStyleSheet(original_style)
+            timer.deleteLater()
+            try:
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
+                btn.update()
+            except Exception:
+                pass
+
+        timer.timeout.connect(restore)
+        timer.start(duration_ms)
+
+    def _flash_and_call(self, btn: QPushButton, fn: Callable[[], None]) -> None:
+        try:
+            self._flash_button(btn, STOP_FLASH_MS)
+        except Exception as e:
+            _dbg(f"_flash_and_call: flash failed: {e!r}")
+
+        try:
+            fn()
+        except Exception as e:
+            _dbg(f"_flash_and_call: stop action failed: {e!r}")
 
     # --- Paging / layout ---
 
@@ -380,16 +446,6 @@ class Soundboard(QWidget):
             )
 
     def _manual_update_check(self, result_callback=None) -> None:
-        """
-        Called from the LoadWindow 'Check for Updates' button.
-
-        This should perform an update check even if the user has previously
-        snoozed a version, so we ask the UpdateClient to ignore the
-        skip_version logic for this run.
-
-        If result_callback is provided, it will be called with a string status:
-        "no_update", "update_available", "deprecated", or "error".
-        """
         _dbg("_manual_update_check: triggered from UI")
         if self._update_client is None:
             _dbg("_manual_update_check: no update client, ignoring")
@@ -437,12 +493,8 @@ class Soundboard(QWidget):
     # --- Help window ---
 
     def _show_help_window(self) -> None:
-        """
-        Show the Help / Credits window, creating it on first use.
-        """
         if self._help_window is None:
             _dbg("_show_help_window: creating HelpWindow instance")
-            # Create as a top-level window for independent stacking
             self._help_window = HelpWindow(None)
 
         _dbg("_show_help_window: showing HelpWindow")

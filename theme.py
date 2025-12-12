@@ -1,3 +1,5 @@
+# theme.py (minimal change: make the stop-button outline thinner)
+
 from PySide6.QtGui import QPalette, QColor
 
 
@@ -44,6 +46,11 @@ def apply_dark_theme(app):
 
         QPushButton:pressed {
             background-color: #555555;
+        }
+
+        /* Stop buttons (main UI): thinner red pastel outline */
+        QPushButton[stopButton="true"] {
+            border: 1px solid #e57373;
         }
 
         QLineEdit {
