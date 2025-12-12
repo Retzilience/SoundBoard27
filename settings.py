@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 APP_NAME = "SoundBoard27"
-APP_VERSION = "0.3"
+APP_VERSION = "0.4"
 CONFIG_BASENAME = "soundboard_config.json"
 
 # URL of the update descriptor file
